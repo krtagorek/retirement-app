@@ -9,11 +9,12 @@ dependencies = [
     "langgraph>=1.2.14",
     "openai>=3.26.0",
     "pandas>=3.0.6",
+    "python-dotenv>=1.0.1",
     "streamlit>=1.65.0",
 ]
 
 [project.scripts]
-retirement-app = "retirement_app:main"
+retirement-app = "app:main"
 
 [build-system]
 requires = ["uv_build>=0.12.17,<0.13.0"]
