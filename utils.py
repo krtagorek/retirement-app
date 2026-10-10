@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -205,14 +207,137 @@ def synthesize_guidance(
                 "content": (
                     "You are a fiduciary-style retirement planning assistant. "
                     "Give practical, cautious, non-personalized educational guidance. "
-                    "Do not claim to be a financial advisor."
+                    "Do not claim to be a financial advisor. "
+                    "Return the answer in clean Markdown with the sections: Summary, What’s working, "
+                    "What to consider, and Next steps. Use short bullet points under each section."
                 ),
             },
             {
                 "role": "user",
-                "content": f"Create concise retirement readiness guidance from this JSON:\n{prompt}",
+                "content": f"Create concise retirement readiness guidance from this JSON. Keep it under 250 words and format it as Markdown with clear headings and bullet points:\n{prompt}",
             },
         ],
     )
 
     return response.output_text
+
+
+def initialize_chat_state() -> None:
+    if "chat_history" not in globals():
+        pass
+
+
+def parse_what_if_text(
+    user_text: str,
+    current_inputs: dict[str, Any],
+    current_projection: RetirementProjection,
+) -> dict[str, Any]:
+    updated = dict(current_inputs)
+
+    text = user_text.lower()
+    if any(phrase in text for phrase in ["stop contributing", "stop my 401k", "stop my 401(k)", "set contribution to zero", "zero out my 401k", "remove my 401k", "remove contribution"]):
+        updated["annual_contribution"] = 0.0
+
+    patterns = {
+        "annual_contribution": [
+            r"(?:increase|raise|add|change|lower|decrease|reduce|set)\s+(?:my\s+)?(?:401k(?:\s+contribution)?|401\(k\)(?:\s+contribution)?|contribution)\s+(?:by\s+)?(\d+(?:\.\d+)?)\s*%",
+            r"(?:increase|raise|add|change|lower|decrease|reduce|set)\s+(?:my\s+)?(?:401k(?:\s+contribution)?|401\(k\)(?:\s+contribution)?|contribution)\s+(?:by\s+)?\$?([\d,]+(?:\.\d+)?)\s*(?:/\s*mo|\s*per\s*month|\s*monthly|\s*mo)?",
+            r"\$([\d,]+(?:\.\d+)?)\s*(?:/\s*mo|\s*per\s*month|\s*monthly|\s*mo)\s*(?:more|less)?\s*(?:to|toward)?\s*(?:my\s+)?(?:401k|401\(k\)|contribution)",
+        ],
+        "target_age": [
+            r"(?:retire|retirement|target age)\s+(?:at|to|by)\s*(\d{2})",
+            r"(?:work|delay)\s+(?:until|to)\s*(\d{2})",
+            r"(?:retire|retirement)\s+(?:by|in)\s+(\d+)\s+years?",
+        ],
+    }
+
+    for field, field_patterns in patterns.items():
+        for pattern in field_patterns:
+            match = re.search(pattern, text)
+            if match:
+                value = float(match.group(1).replace(",", ""))
+                if field == "annual_contribution":
+                    if "%" in pattern:
+                        if any(word in text for word in ["decrease", "reduce", "lower"]):
+                            value = max(current_projection.annual_contribution * (1 - value / 100.0), 0.0)
+                        else:
+                            value = current_projection.annual_contribution * (1 + value / 100.0)
+                        updated[field] = value
+                        break
+                    if any(word in text for word in ["decrease", "reduce", "lower", "less"]):
+                        value = max(current_projection.annual_contribution - value, 0.0)
+                    elif any(word in text for word in ["increase", "raise", "add", "more"]):
+                        value = current_projection.annual_contribution + value
+                    updated[field] = value
+                elif field == "target_age":
+                    if "year" in pattern:
+                        updated[field] = min(max(current_projection.current_age + int(value), current_projection.current_age), 120)
+                    else:
+                        updated[field] = int(value)
+                break
+
+    return updated
+
+
+def run_what_if_analysis(
+    user_text: str,
+    current_inputs: dict[str, Any],
+    current_projection: RetirementProjection,
+    financial_df: pd.DataFrame,
+    inflation_context: dict[str, Any],
+) -> tuple[dict[str, Any], RetirementProjection, str]:
+    updated_inputs = parse_what_if_text(user_text, current_inputs, current_projection)
+    financial_snapshot = summarize_financial_csv(financial_df) if not financial_df.empty else None
+    starting_balance = financial_snapshot.current_retirement_balance if financial_snapshot else 0.0
+
+    updated_projection = calculate_compound_growth(
+        current_age=int(updated_inputs.get("current_age", current_projection.current_age)),
+        target_age=int(updated_inputs.get("target_age", current_projection.target_age)),
+        annual_contribution=float(updated_inputs.get("annual_contribution", current_projection.annual_contribution)),
+        desired_income=float(updated_inputs.get("desired_income", current_projection.desired_income)),
+        starting_balance=starting_balance,
+    )
+
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY")) if os.getenv("OPENAI_API_KEY") else None
+    if client is None:
+        answer = (
+            f"With your updated inputs, the projection changes to a balance of ${updated_projection.projected_balance:,.2f}. "
+            f"The gap to your income goal is ${updated_projection.gap_to_target_income:,.2f}."
+        )
+        return updated_inputs, updated_projection, answer
+
+    payload = {
+        "user_question": user_text,
+        "updated_inputs": updated_inputs,
+        "projection": {
+            "current_age": updated_projection.current_age,
+            "target_age": updated_projection.target_age,
+            "annual_contribution": updated_projection.annual_contribution,
+            "desired_income": updated_projection.desired_income,
+            "starting_balance": updated_projection.starting_balance,
+            "years": updated_projection.years,
+            "projected_balance": round(updated_projection.projected_balance, 2),
+            "gap_to_target_income": round(updated_projection.gap_to_target_income, 2),
+        },
+        "inflation_context": inflation_context,
+    }
+
+    response = client.responses.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+        input=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a concise retirement planning assistant. "
+                    "Explain the updated result in plain English, mention the changed input(s), "
+                    "and keep the answer brief and friendly."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(payload),
+            },
+        ],
+    )
+
+    return updated_inputs, updated_projection, response.output_text

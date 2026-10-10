@@ -4,7 +4,12 @@ import unittest
 
 import pandas as pd
 
-from utils import calculate_compound_growth, summarize_financial_csv, validate_financial_csv
+from utils import (
+    calculate_compound_growth,
+    parse_what_if_text,
+    summarize_financial_csv,
+    validate_financial_csv,
+)
 
 
 class TestRetirementUtils(unittest.TestCase):
@@ -68,6 +73,42 @@ class TestRetirementUtils(unittest.TestCase):
         self.assertAlmostEqual(snapshot.monthly_profit_avg, 2650.0)
         self.assertAlmostEqual(snapshot.current_retirement_balance, 94200.0)
         self.assertAlmostEqual(snapshot.current_asset_total, 299700.0)
+
+    def test_parse_what_if_text_handles_percent_change(self) -> None:
+        current_inputs = {
+            "current_age": 45,
+            "target_age": 65,
+            "annual_contribution": 12000.0,
+            "desired_income": 70000.0,
+        }
+        projection = calculate_compound_growth(
+            current_age=45,
+            target_age=65,
+            annual_contribution=12000.0,
+            desired_income=70000.0,
+            starting_balance=100000,
+        )
+
+        updated = parse_what_if_text("What if I increase my 401k contribution by 10%?", current_inputs, projection)
+        self.assertAlmostEqual(updated["annual_contribution"], 13200.0)
+
+    def test_parse_what_if_text_handles_stop_contributing(self) -> None:
+        current_inputs = {
+            "current_age": 45,
+            "target_age": 65,
+            "annual_contribution": 12000.0,
+            "desired_income": 70000.0,
+        }
+        projection = calculate_compound_growth(
+            current_age=45,
+            target_age=65,
+            annual_contribution=12000.0,
+            desired_income=70000.0,
+            starting_balance=100000,
+        )
+
+        updated = parse_what_if_text("What if I stop contributing to my 401k?", current_inputs, projection)
+        self.assertEqual(updated["annual_contribution"], 0.0)
 
 
 if __name__ == "__main__":

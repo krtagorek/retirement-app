@@ -10,6 +10,7 @@ from utils import (
     calculate_compound_growth,
     load_financial_csv,
     run_langgraph_inflation_agent,
+    run_what_if_analysis,
     summarize_financial_csv,
     validate_financial_csv,
     synthesize_guidance,
@@ -88,8 +89,9 @@ def inject_styles() -> None:
                 background: rgba(255, 255, 255, 0.92);
                 border: 1px solid rgba(148, 163, 184, 0.18);
                 border-radius: 18px;
-                padding: 0.5rem;
+                padding: 0.85rem 0.9rem 0.75rem 0.9rem;
                 box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+                min-height: 100%;
             }
             .section-label {
                 font-size: 0.8rem;
@@ -98,6 +100,21 @@ def inject_styles() -> None:
                 text-transform: uppercase;
                 color: #64748b;
                 margin-bottom: 0.35rem;
+            }
+            .panel-title {
+                font-size: 0.95rem;
+                font-weight: 800;
+                color: #0f172a;
+                margin-bottom: 0.15rem;
+            }
+            .panel-subtitle {
+                font-size: 0.85rem;
+                color: #64748b;
+                margin-bottom: 0.85rem;
+            }
+            div[data-testid="stDataFrame"] {
+                border-radius: 12px;
+                overflow: hidden;
             }
         </style>
         """,
@@ -314,6 +331,94 @@ def render_summary_at_a_glance(projection, inflation_context: dict[str, object])
     )
 
 
+def render_scenario_summary(updated_inputs: dict[str, object], updated_projection) -> None:
+    st.markdown(
+        f"""
+        <div style="padding: 0.95rem 1rem; border-radius: 1rem; border: 1px solid rgba(148,163,184,0.18); background: rgba(255,255,255,0.95); box-shadow: 0 10px 24px rgba(15,23,42,0.05); margin-bottom: 0.6rem;">
+            <div style="font-size: 0.8rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: #64748b; margin-bottom: 0.3rem;">Updated scenario</div>
+            <div style="font-size: 0.9rem; color: #334155; line-height: 1.45;">
+                Current age: {updated_inputs.get('current_age')} • Target age: {updated_inputs.get('target_age')} • 
+                Annual contribution: ${float(updated_inputs.get('annual_contribution', 0.0)):,.2f} • 
+                Projected balance: ${updated_projection.projected_balance:,.2f}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_summary_overview(projection, financial_df: pd.DataFrame, inflation_context: dict[str, object]) -> None:
+    projection_data = asdict(projection)
+    is_on_track = projection_data["gap_to_target_income"] <= 0
+    render_status_card(is_on_track, projection_data["gap_to_target_income"])
+    render_summary_at_a_glance(projection, inflation_context)
+
+    render_metric_grid([
+        ("Projected Balance", f"${projection_data['projected_balance']:,.2f}", "Estimated balance at your target age"),
+        ("Years to Target", str(projection_data["years"]), "Time remaining in the projection"),
+        ("Annual Return", f"{projection_data['annual_return_rate']:.1%}", "Assumed long-term growth rate"),
+        ("Income Gap", f"${projection_data['gap_to_target_income']:,.2f}", "Difference versus desired income"),
+    ])
+
+    col_chart, col_snapshot = st.columns([1.2, 1])
+    with col_chart:
+        chart_data = build_projection_chart(projection)
+        st.markdown("**Projected Growth Chart**")
+        st.line_chart(chart_data.set_index("Year"))
+
+    with col_snapshot:
+        if not financial_df.empty:
+            st.markdown("**Your Financial Snapshot**")
+            snapshot = summarize_financial_csv(financial_df)
+            render_metric_grid([
+                ("Avg Monthly Income", f"${snapshot.monthly_income_avg:,.2f}", "Average monthly income over the last 12 months"),
+                ("Avg Monthly Expenses", f"${snapshot.monthly_expenses_avg:,.2f}", "Average monthly spending over the last 12 months"),
+            ])
+            render_metric_grid([
+                ("Avg Monthly Profit", f"${snapshot.monthly_profit_avg:,.2f}", "Income minus expenses on average"),
+                ("Current Retirement Balance", f"${snapshot.current_retirement_balance:,.2f}", "Starting balance used in the projection"),
+            ])
+            render_metric_grid([
+                ("Current Asset Total", f"${snapshot.current_asset_total:,.2f}", "All assets combined from your file"),
+            ])
+
+    if not financial_df.empty:
+        cashflow_chart = build_cashflow_chart(financial_df)
+        if not cashflow_chart.empty:
+            st.markdown("**Income, Spending, and Profit Trend**")
+            st.line_chart(cashflow_chart.set_index("Month"))
+
+
+def render_guidance_summary(guidance_text: str) -> None:
+    clean_text = guidance_text.strip() if guidance_text else ""
+    if clean_text:
+        st.markdown(
+            """
+            <div style="padding: 1rem 1.1rem; border-radius: 1rem; border: 1px solid rgba(37,99,235,0.18); background: linear-gradient(135deg, rgba(239,246,255,0.96), rgba(255,255,255,0.98)); box-shadow: 0 10px 24px rgba(37,99,235,0.06);">
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(clean_text)
+        st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        st.info("No guidance generated yet.")
+
+
+def render_summary_technical(projection, financial_df: pd.DataFrame) -> None:
+    projection_data = asdict(projection)
+    with st.expander("Technical details", expanded=False):
+        st.write("Projection math, inflation data, and the full data payload stay here for transparency without crowding the page.")
+        with st.expander("See how the projection was calculated"):
+            st.json(projection_data)
+        with st.expander("See the inflation snapshot"):
+            st.json(st.session_state.inflation_context)
+        with st.expander("See the data dictionary"):
+            render_data_dictionary()
+        if not financial_df.empty:
+            with st.expander("See the uploaded data preview"):
+                st.dataframe(financial_df, use_container_width=True)
+
+
 def generate_report_from_state():
     financial_df = st.session_state.financial_df
     inputs = st.session_state.inputs
@@ -369,6 +474,8 @@ def main() -> None:
             "annual_contribution": 10000.0,
             "desired_income": 70000.0,
         }
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
     submitted = False
 
     with st.container():
@@ -386,45 +493,54 @@ def main() -> None:
                 use_container_width=False,
             )
 
-            st.markdown("<div class='summary-panel'>", unsafe_allow_html=True)
-            st.markdown("**What to enter**")
-            st.caption("Your age, your target age, how much you save each year, and the income you want in retirement.")
-
             with st.form("retirement_inputs"):
-                default_inputs = st.session_state.inputs
-                left_top, right_top = st.columns(2)
-                with left_top:
-                    current_age = st.number_input("Current Age", min_value=0, max_value=120, value=int(default_inputs["current_age"]), step=1)
-                with right_top:
-                    target_age = st.number_input("Target Age", min_value=0, max_value=120, value=int(default_inputs["target_age"]), step=1)
+                left_panel, right_panel = st.columns([1, 1.2])
+                with left_panel:
+                    st.markdown("<div class='summary-panel'>", unsafe_allow_html=True)
+                    st.markdown("<div class='panel-title'>What to enter</div>", unsafe_allow_html=True)
+                    st.markdown("<div class='panel-subtitle'>Your age, your target age, how much you save each year, and the income you want in retirement.</div>", unsafe_allow_html=True)
 
-                left_bottom, right_bottom = st.columns(2)
-                with left_bottom:
-                    annual_contribution = st.number_input("401(k) Contribution", min_value=0.0, value=float(default_inputs["annual_contribution"]), step=500.0)
-                with right_bottom:
-                    desired_income = st.number_input("Desired Income", min_value=0.0, value=float(default_inputs["desired_income"]), step=1000.0)
+                    default_inputs = st.session_state.inputs
+                    left_top, right_top = st.columns(2)
+                    with left_top:
+                        current_age = st.number_input("Current Age", min_value=0, max_value=120, value=int(default_inputs["current_age"]), step=1)
+                    with right_top:
+                        target_age = st.number_input("Target Age", min_value=0, max_value=120, value=int(default_inputs["target_age"]), step=1)
 
-                uploaded_file = st.file_uploader("Upload your spreadsheet", type=["csv", "xlsx", "xls"])
-                submitted = st.form_submit_button("See My Summary")
+                    left_bottom, right_bottom = st.columns(2)
+                    with left_bottom:
+                        annual_contribution = st.number_input("401(k) Contribution", min_value=0.0, value=float(default_inputs["annual_contribution"]), step=500.0)
+                    with right_bottom:
+                        desired_income = st.number_input("Desired Income", min_value=0.0, value=float(default_inputs["desired_income"]), step=1000.0)
+                    st.markdown("</div>", unsafe_allow_html=True)
 
-            st.markdown("</div>", unsafe_allow_html=True)
+                with right_panel:
+                    st.markdown("<div class='summary-panel'>", unsafe_allow_html=True)
+                    st.markdown("<div class='panel-title'>Upload your spreadsheet</div>", unsafe_allow_html=True)
+                    st.markdown("<div class='panel-subtitle'>Preview your data on the right so you can quickly check everything before moving on.</div>", unsafe_allow_html=True)
+                    uploaded_file = st.file_uploader("Upload your spreadsheet", type=["csv", "xlsx", "xls"])
+                    financial_df = load_financial_csv(uploaded_file)
+                    st.session_state.financial_df = financial_df
+                    if not financial_df.empty:
+                        validation = validate_financial_csv(financial_df)
+                        if validation.is_valid:
+                            st.success("Your file loaded successfully.")
+                        else:
+                            st.warning("Your file loaded, but a few things need attention.")
+                            for issue in validation.issues:
+                                st.write(f"- {issue}")
+                        st.dataframe(financial_df.head(5), use_container_width=True, height=180)
+                        with st.expander("View full preview"):
+                            st.dataframe(financial_df, use_container_width=True, height=320)
+                        with st.expander("Data dictionary"):
+                            render_data_dictionary()
+                    else:
+                        st.caption("Upload a spreadsheet to preview your financial data and unlock the summary.")
+                    st.markdown("</div>", unsafe_allow_html=True)
 
-            financial_df = load_financial_csv(uploaded_file)
-            st.session_state.financial_df = financial_df
-            if not financial_df.empty:
-                validation = validate_financial_csv(financial_df)
-                if validation.is_valid:
-                    st.success("Your file loaded successfully.")
-                else:
-                    st.warning("Your file loaded, but a few things need attention.")
-                    for issue in validation.issues:
-                        st.write(f"- {issue}")
-                st.dataframe(financial_df, use_container_width=True)
-                render_data_dictionary_preview(financial_df)
-                with st.expander("Data dictionary"):
-                    render_data_dictionary()
-            else:
-                st.caption("Upload a spreadsheet to preview your financial data and unlock the summary.")
+                submit_left, submit_mid, submit_right = st.columns([1, 1, 1])
+                with submit_mid:
+                    submitted = st.form_submit_button("See My Summary")
 
         if submitted:
             st.session_state.inputs = {
@@ -456,52 +572,52 @@ def main() -> None:
                 st.info("Run the report from the inputs section to view projections and guidance.")
                 return
 
-            projection_data = asdict(projection)
-            is_on_track = projection_data["gap_to_target_income"] <= 0
-            render_status_card(is_on_track, projection_data["gap_to_target_income"])
-            render_summary_at_a_glance(projection, st.session_state.inflation_context)
-
-            render_metric_grid([
-                ("Projected Balance", f"${projection_data['projected_balance']:,.2f}", "Estimated balance at your target age"),
-                ("Years to Target", str(projection_data["years"]), "Time remaining in the projection"),
-                ("Annual Return", f"{projection_data['annual_return_rate']:.1%}", "Assumed long-term growth rate"),
-                ("Income Gap", f"${projection_data['gap_to_target_income']:,.2f}", "Difference versus desired income"),
+            overview_tab, recommendations_tab, assistant_tab, technical_tab = st.tabs([
+                "Overview",
+                "Recommendations",
+                "Planning Assistant",
+                "Technical Details",
             ])
 
-            chart_data = build_projection_chart(projection)
-            st.subheader("Projected Growth Chart")
-            st.line_chart(chart_data.set_index("Year"))
+            with overview_tab:
+                render_summary_overview(projection, financial_df, st.session_state.inflation_context)
 
-            if not financial_df.empty:
-                st.subheader("Your Financial Snapshot")
-                snapshot = summarize_financial_csv(financial_df)
-                render_metric_grid([
-                    ("Avg Monthly Income", f"${snapshot.monthly_income_avg:,.2f}", "Average monthly income over the last 12 months"),
-                    ("Avg Monthly Expenses", f"${snapshot.monthly_expenses_avg:,.2f}", "Average monthly spending over the last 12 months"),
-                    ("Avg Monthly Profit", f"${snapshot.monthly_profit_avg:,.2f}", "Income minus expenses on average"),
-                ])
+            with recommendations_tab:
+                st.subheader("Personalized Guidance")
+                render_guidance_summary(st.session_state.guidance)
 
-                render_metric_grid([
-                    ("Current Retirement Balance", f"${snapshot.current_retirement_balance:,.2f}", "Starting balance used in the projection"),
-                    ("Current Asset Total", f"${snapshot.current_asset_total:,.2f}", "All assets combined from your file"),
-                ])
+            with assistant_tab:
+                assistant_header_left, assistant_header_right = st.columns([6, 1])
+                with assistant_header_left:
+                    st.subheader("Dynamic Planning Assistant")
+                    st.caption("Ask follow-up questions to explore different retirement scenarios in real time.")
+                with assistant_header_right:
+                    st.write("")
+                    if st.button("Clear", use_container_width=True):
+                        st.session_state.chat_history = []
+                        st.rerun()
 
-                cashflow_chart = build_cashflow_chart(financial_df)
-                if not cashflow_chart.empty:
-                    st.subheader("Income, Spending, and Profit Trend")
-                    st.line_chart(cashflow_chart.set_index("Month"))
+                for message in st.session_state.chat_history:
+                    with st.chat_message(message["role"]):
+                        st.write(message["content"])
 
-            with st.expander("Technical details"):
-                st.write("Projection math, inflation data, and the full data payload stay here for transparency without crowding the page.")
-                with st.expander("See how the projection was calculated"):
-                    st.json(projection_data)
-                with st.expander("See the inflation snapshot"):
-                    st.json(st.session_state.inflation_context)
-                with st.expander("See the data dictionary"):
-                    render_data_dictionary()
+                if chat_prompt := st.chat_input("Ask a what-if question (e.g., 'What if I increase my 401k contribution by $300/mo?')..."):
+                    st.session_state.chat_history.append({"role": "user", "content": chat_prompt})
+                    updated_inputs, updated_projection, answer = run_what_if_analysis(
+                        user_text=chat_prompt,
+                        current_inputs=st.session_state.inputs,
+                        current_projection=st.session_state.projection,
+                        financial_df=st.session_state.financial_df,
+                        inflation_context=st.session_state.inflation_context,
+                    )
+                    st.session_state.inputs = updated_inputs
+                    st.session_state.projection = updated_projection
+                    render_scenario_summary(updated_inputs, updated_projection)
+                    st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                    st.rerun()
 
-            st.subheader("Helpful Guidance")
-            st.write(st.session_state.guidance or "No guidance generated yet.")
+            with technical_tab:
+                render_summary_technical(projection, financial_df)
 
         st.markdown("</div>", unsafe_allow_html=True)
 
