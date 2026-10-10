@@ -1,5 +1,7 @@
 fredapi>=0.5.2
 langgraph>=1.2.14
+openpyxl>=3.1.5
 openai>=3.26.0
 pandas>=3.0.6
+python-dotenv>=1.0.1
 streamlit>=1.65.0

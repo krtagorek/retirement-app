@@ -74,6 +74,9 @@ def calculate_compound_growth(
 def load_financial_csv(uploaded_file: Any) -> pd.DataFrame:
     if uploaded_file is None:
         return pd.DataFrame()
+    filename = getattr(uploaded_file, "name", "").lower()
+    if filename.endswith((".xlsx", ".xls")):
+        return pd.read_excel(uploaded_file)
     return pd.read_csv(uploaded_file)
 
 
