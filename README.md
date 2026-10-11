@@ -148,24 +148,25 @@ The app shows a short assumptions box on the Summary page so users can quickly s
 
 ## Screenshots
 
-Add screenshots here once you capture them from the running app:
 
-- `screenshots/details-page.png` — the input page with upload and criteria fields
-- `screenshots/end-user-flow.png` — the end-user workflow diagram
-- `screenshots/technical-architecture.png` — the technical architecture diagram
-- `screenshots/summary-page.png` — the summary page with the status card and charts
-- `screenshots/summary-page1.png` — guidance or assistant view
-- `screenshots/summary-page2.png` — another summary view
-- `screenshots/summary-page3.png` — another summary view
+.Enter your criteria
+![Details Page](./screenshots/details-page.png)
+.Overview
+![Overview Page](./screenshots/overview.png)
+.AI generated guidance
+![Guidance Page](./screenshots/guidance.png)
+.Planning assistance
+![Assistant Page](./screenshots/assistant.png)
+.Other technical details
+![Technical Details Page](./screenshots/technicaldetails.png)
 
-If you want to include a short demo video or GIF, add it here as well:
-
-- `screenshots/demo.gif`
 
 ## Diagrams
+.Technical architecture diagram with Planning Assistant flow
+![Technical Architecture Page](./screenshots/technical-architecture.png)
+.End-user workflow diagram
+![Website Flow Page](./screenshots/end-user-flow.png)
 
-- `screenshots/end-user-flow.png` — end-user workflow diagram
-- `screenshots/technical-architecture.png` — technical architecture diagram with Planning Assistant flow
 
 ## Project structure
 
