@@ -26,6 +26,7 @@ class RetirementProjection:
     years: int
     annual_return_rate: float
     projected_balance: float
+    projected_retirement_income: float
     gap_to_target_income: float
 
 
@@ -60,6 +61,7 @@ def calculate_compound_growth(
     for _ in range(years):
         balance = balance * (1 + annual_return_rate) + annual_contribution
 
+    projected_retirement_income = balance * 0.04
     return RetirementProjection(
         current_age=current_age,
         target_age=target_age,
@@ -69,7 +71,8 @@ def calculate_compound_growth(
         years=years,
         annual_return_rate=annual_return_rate,
         projected_balance=balance,
-        gap_to_target_income=max(desired_income - balance / max(years, 1), 0.0),
+        projected_retirement_income=projected_retirement_income,
+        gap_to_target_income=max(desired_income - projected_retirement_income, 0.0),
     )
 
 
@@ -77,9 +80,12 @@ def load_financial_csv(uploaded_file: Any) -> pd.DataFrame:
     if uploaded_file is None:
         return pd.DataFrame()
     filename = getattr(uploaded_file, "name", "").lower()
-    if filename.endswith((".xlsx", ".xls")):
-        return pd.read_excel(uploaded_file)
-    return pd.read_csv(uploaded_file)
+    try:
+        if filename.endswith((".xlsx", ".xls")):
+            return pd.read_excel(uploaded_file)
+        return pd.read_csv(uploaded_file)
+    except Exception:
+        return pd.DataFrame()
 
 
 def validate_financial_csv(df: pd.DataFrame) -> CsvValidationResult:
@@ -240,6 +246,7 @@ def parse_what_if_text(
 
     patterns = {
         "annual_contribution": [
+            r"(?:add|increase|raise|boost|put in)\s+(?:an?\s+)?(?:extra\s+)?(?:\$?)([\d,]+(?:\.\d+)?)\s*(?:more\s+)?(?:/\s*mo|\s*per\s*month|\s*monthly|\s*mo|\s*a\s*month)?\s*(?:to|into|toward|in|for)?\s*(?:my\s+)?(?:401k(?:\s+contribution)?|401\(k\)(?:\s+contribution)?|retirement|contribution)?",
             r"(?:increase|raise|add|change|lower|decrease|reduce|set)\s+(?:my\s+)?(?:401k(?:\s+contribution)?|401\(k\)(?:\s+contribution)?|contribution)\s+(?:by\s+)?(\d+(?:\.\d+)?)\s*%",
             r"(?:increase|raise|add|change|lower|decrease|reduce|set)\s+(?:my\s+)?(?:401k(?:\s+contribution)?|401\(k\)(?:\s+contribution)?|contribution)\s+(?:by\s+)?\$?([\d,]+(?:\.\d+)?)\s*(?:/\s*mo|\s*per\s*month|\s*monthly|\s*mo)?",
             r"\$([\d,]+(?:\.\d+)?)\s*(?:/\s*mo|\s*per\s*month|\s*monthly|\s*mo)\s*(?:more|less)?\s*(?:to|toward)?\s*(?:my\s+)?(?:401k|401\(k\)|contribution)",
@@ -264,10 +271,18 @@ def parse_what_if_text(
                             value = current_projection.annual_contribution * (1 + value / 100.0)
                         updated[field] = value
                         break
+                    is_monthly_amount = bool(
+                        re.search(r"(?:/\s*mo|\s*per\s*month|\s*monthly|\s*mo|\s*a\s*month)", pattern)
+                        or re.search(r"(?:/\s*mo|\s*per\s*month|\s*monthly|\s*mo|\s*a\s*month)", text)
+                    )
+                    if is_monthly_amount:
+                        value *= 12
                     if any(word in text for word in ["decrease", "reduce", "lower", "less"]):
                         value = max(current_projection.annual_contribution - value, 0.0)
-                    elif any(word in text for word in ["increase", "raise", "add", "more"]):
+                    elif any(word in text for word in ["increase", "raise", "boost", "add", "more"]):
                         value = current_projection.annual_contribution + value
+                    elif re.search(r"(?:add|increase|raise|boost|put in)\s+.*?(?:extra\s+)?(?:\$?)([\d,]+(?:\.\d+)?)\s*(?:/\s*mo|\s*per\s*month|\s*monthly|\s*mo|\s*a\s*month)?", text):
+                        pass
                     updated[field] = value
                 elif field == "target_age":
                     if "year" in pattern:
@@ -298,11 +313,29 @@ def run_what_if_analysis(
         starting_balance=starting_balance,
     )
 
+    contribution_delta = float(updated_projection.annual_contribution) - float(current_projection.annual_contribution)
+    if abs(contribution_delta) >= 1:
+        delta_description = f"an extra ${abs(contribution_delta):,.2f} per year"
+    else:
+        delta_description = "the current contribution level"
+
+    contribution_change_summary = (
+        f"Contribution updated from ${current_projection.annual_contribution:,.2f}/year "
+        f"to ${updated_projection.annual_contribution:,.2f}/year."
+    )
+
+    factual_summary = (
+        f"Updated scenario: age {updated_projection.current_age} to {updated_projection.target_age}, "
+        f"starting balance ${updated_projection.starting_balance:,.2f}, annual contribution ${updated_projection.annual_contribution:,.2f}, "
+        f"projected balance ${updated_projection.projected_balance:,.2f}, gap ${updated_projection.gap_to_target_income:,.2f}."
+    )
+
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY")) if os.getenv("OPENAI_API_KEY") else None
     if client is None:
         answer = (
-            f"With your updated inputs, the projection changes to a balance of ${updated_projection.projected_balance:,.2f}. "
-            f"The gap to your income goal is ${updated_projection.gap_to_target_income:,.2f}."
+            f"{factual_summary}\n{contribution_change_summary}\n\n"
+            f"That means {delta_description} changes the long-term outlook, and you still appear to have a gap of "
+            f"${updated_projection.gap_to_target_income:,.2f}."
         )
         return updated_inputs, updated_projection, answer
 
@@ -330,14 +363,16 @@ def run_what_if_analysis(
                 "content": (
                     "You are a concise retirement planning assistant. "
                     "Explain the updated result in plain English, mention the changed input(s), "
-                    "and keep the answer brief and friendly."
+                    "and keep the answer brief and friendly. Do not change any numeric values. "
+                    "Start with the exact factual summary provided by the app."
                 ),
             },
             {
                 "role": "user",
-                "content": json.dumps(payload),
+                "content": json.dumps({"factual_summary": factual_summary, **payload}),
             },
         ],
     )
 
-    return updated_inputs, updated_projection, response.output_text
+    answer = f"{factual_summary}\n{contribution_change_summary}\n\n{response.output_text.strip()}"
+    return updated_inputs, updated_projection, answer

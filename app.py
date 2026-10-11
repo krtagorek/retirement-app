@@ -80,6 +80,25 @@ def inject_styles() -> None:
                 border-color: rgba(79, 70, 229, 0.35);
                 box-shadow: 0 12px 24px rgba(37, 99, 235, 0.22);
             }
+            .stNumberInput input {
+                background: #ffffff !important;
+                color: #0f172a !important;
+                border: 1px solid rgba(148, 163, 184, 0.45) !important;
+                border-radius: 12px !important;
+            }
+            div[data-baseweb="input"] {
+                background: #ffffff !important;
+                border-radius: 12px !important;
+            }
+            div[data-baseweb="input"] input {
+                color: #0f172a !important;
+            }
+            .stTextInput input {
+                background: #ffffff !important;
+                color: #0f172a !important;
+                border: 1px solid rgba(148, 163, 184, 0.45) !important;
+                border-radius: 12px !important;
+            }
             .summary-grid {
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -245,7 +264,7 @@ def render_status_card(is_on_track: bool, gap_amount: float) -> None:
         background = "#fee2e2"
         border = "#dc2626"
         title = "You’re close — here’s the gap"
-        body = f"You may need about ${gap_amount:,.2f} more to better support your income goal."
+        body = f"Based on a 4% withdrawal estimate, you may need about ${gap_amount:,.2f} more annual income to reach your goal."
 
     st.markdown(
         f"""
@@ -274,6 +293,7 @@ def render_assumptions_box(projection, inflation_context: dict[str, object]) -> 
             <div style="font-size: 0.95rem; font-weight: 700; color: #0f172a; margin-bottom: 0.4rem;">Assumptions</div>
             <div style="font-size: 0.9rem; color: #0f172a; line-height: 1.6;">
                 Return rate: {projection.annual_return_rate:.1%}<br/>
+                Retirement income estimate: 4% withdrawal rate<br/>
                 Starting retirement balance: ${projection.starting_balance:,.2f}<br/>
                 Inflation source: {inflation_source}<br/>
                 For educational use only, not financial advice.
@@ -293,6 +313,7 @@ def render_compact_summary_header(projection, inflation_context: dict[str, objec
             <div style="font-size: 0.86rem; color: #475569; line-height: 1.5;">
                 Return rate: {projection.annual_return_rate:.1%} &nbsp;•&nbsp;
                 Starting balance: ${projection.starting_balance:,.2f} &nbsp;•&nbsp;
+                Retirement income estimate: 4% withdrawal rate &nbsp;•&nbsp;
                 Inflation source: {inflation_source} &nbsp;•&nbsp;
                 Educational use only, not financial advice.
             </div>
@@ -303,9 +324,10 @@ def render_compact_summary_header(projection, inflation_context: dict[str, objec
 
 
 def render_summary_at_a_glance(projection, inflation_context: dict[str, object]) -> None:
-    is_on_track = projection.projected_balance >= projection.desired_income
+    is_on_track = projection.gap_to_target_income <= 0
     status_text = "On track" if is_on_track else "Gap to close"
     status_color = "#16a34a" if is_on_track else "#dc2626"
+    gap_text = "No income gap" if is_on_track else f"Income gap: ${projection.gap_to_target_income:,.2f}"
     inflation_source = inflation_context.get("series_id", "FRED CPI") if isinstance(inflation_context, dict) else "FRED CPI"
 
     st.markdown(
@@ -315,13 +337,14 @@ def render_summary_at_a_glance(projection, inflation_context: dict[str, object])
                 <div style="font-size: 0.8rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: #64748b; margin-bottom: 0.35rem;">Main takeaway</div>
                 <div style="font-size: 1.2rem; font-weight: 800; color: {status_color}; margin-bottom: 0.2rem;">{status_text}</div>
                 <div style="font-size: 0.9rem; color: #334155; line-height: 1.45;">
-                    Return rate {projection.annual_return_rate:.1%} • Starting balance ${projection.starting_balance:,.2f}
+                    Projected retirement income ${projection.projected_retirement_income:,.2f} • {gap_text} • Based on a 4% withdrawal rate
                 </div>
             </div>
             <div style="padding: 0.95rem 1rem; border-radius: 1rem; border: 1px solid rgba(148,163,184,0.18); background: rgba(255,255,255,0.94); box-shadow: 0 10px 24px rgba(15,23,42,0.05);">
                 <div style="font-size: 0.8rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: #64748b; margin-bottom: 0.35rem;">Assumptions</div>
                 <div style="font-size: 0.86rem; color: #334155; line-height: 1.55;">
                     Inflation source: {inflation_source}<br/>
+                    Income projection: 4% withdrawal rate<br/>
                     Educational use only, not financial advice.
                 </div>
             </div>
@@ -355,6 +378,7 @@ def render_summary_overview(projection, financial_df: pd.DataFrame, inflation_co
 
     render_metric_grid([
         ("Projected Balance", f"${projection_data['projected_balance']:,.2f}", "Estimated balance at your target age"),
+        ("Projected Retirement Income", f"${projection_data['projected_balance'] * 0.04:,.2f}", "Estimated annual income using a 4% withdrawal rate"),
         ("Years to Target", str(projection_data["years"]), "Time remaining in the projection"),
         ("Annual Return", f"{projection_data['annual_return_rate']:.1%}", "Assumed long-term growth rate"),
         ("Income Gap", f"${projection_data['gap_to_target_income']:,.2f}", "Difference versus desired income"),
@@ -476,6 +500,8 @@ def main() -> None:
         }
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
+    if "last_scenario_summary" not in st.session_state:
+        st.session_state.last_scenario_summary = None
     submitted = False
 
     with st.container():
@@ -493,55 +519,66 @@ def main() -> None:
                 use_container_width=False,
             )
 
-            with st.form("retirement_inputs"):
-                left_panel, right_panel = st.columns([1, 1.2])
-                with left_panel:
-                    st.markdown("<div class='summary-panel'>", unsafe_allow_html=True)
-                    st.markdown("<div class='panel-title'>What to enter</div>", unsafe_allow_html=True)
-                    st.markdown("<div class='panel-subtitle'>Your age, your target age, how much you save each year, and the income you want in retirement.</div>", unsafe_allow_html=True)
+            left_panel, right_panel = st.columns([1, 1.2])
+            with left_panel:
+                st.markdown("<div class='summary-panel'>", unsafe_allow_html=True)
+                st.markdown("<div class='panel-title'>What to enter</div>", unsafe_allow_html=True)
+                st.markdown("<div class='panel-subtitle'>Your age, your target age, how much you save each year, and the income you want in retirement.</div>", unsafe_allow_html=True)
 
-                    default_inputs = st.session_state.inputs
-                    left_top, right_top = st.columns(2)
-                    with left_top:
-                        current_age = st.number_input("Current Age", min_value=0, max_value=120, value=int(default_inputs["current_age"]), step=1)
-                    with right_top:
-                        target_age = st.number_input("Target Age", min_value=0, max_value=120, value=int(default_inputs["target_age"]), step=1)
+                default_inputs = st.session_state.inputs
+                left_top, right_top = st.columns(2)
+                with left_top:
+                    current_age = st.number_input("Current Age", min_value=0, max_value=120, value=int(default_inputs["current_age"]), step=1)
+                with right_top:
+                    target_age = st.number_input("Target Retirement Age", min_value=0, max_value=120, value=int(default_inputs["target_age"]), step=1)
 
-                    left_bottom, right_bottom = st.columns(2)
-                    with left_bottom:
-                        annual_contribution = st.number_input("401(k) Contribution", min_value=0.0, value=float(default_inputs["annual_contribution"]), step=500.0)
-                    with right_bottom:
-                        desired_income = st.number_input("Desired Income", min_value=0.0, value=float(default_inputs["desired_income"]), step=1000.0)
-                    st.markdown("</div>", unsafe_allow_html=True)
+                left_bottom, right_bottom = st.columns(2)
+                with left_bottom:
+                    annual_contribution = st.number_input("401(k) Annual Contribution", min_value=0.0, value=float(default_inputs["annual_contribution"]), step=500.0)
+                with right_bottom:
+                    desired_income = st.number_input("Desired Annual Income", min_value=0.0, value=float(default_inputs["desired_income"]), step=1000.0)
+                st.markdown("</div>", unsafe_allow_html=True)
 
-                with right_panel:
-                    st.markdown("<div class='summary-panel'>", unsafe_allow_html=True)
-                    st.markdown("<div class='panel-title'>Upload your spreadsheet</div>", unsafe_allow_html=True)
-                    st.markdown("<div class='panel-subtitle'>Preview your data on the right so you can quickly check everything before moving on.</div>", unsafe_allow_html=True)
-                    uploaded_file = st.file_uploader("Upload your spreadsheet", type=["csv", "xlsx", "xls"])
-                    financial_df = load_financial_csv(uploaded_file)
-                    st.session_state.financial_df = financial_df
-                    if not financial_df.empty:
-                        validation = validate_financial_csv(financial_df)
-                        if validation.is_valid:
-                            st.success("Your file loaded successfully.")
-                        else:
-                            st.warning("Your file loaded, but a few things need attention.")
-                            for issue in validation.issues:
-                                st.write(f"- {issue}")
-                        st.dataframe(financial_df.head(5), use_container_width=True, height=180)
-                        with st.expander("View full preview"):
-                            st.dataframe(financial_df, use_container_width=True, height=320)
-                        with st.expander("Data dictionary"):
-                            render_data_dictionary()
+                criteria_changed = (
+                    int(current_age) != int(default_inputs["current_age"])
+                    or int(target_age) != int(default_inputs["target_age"])
+                    or float(annual_contribution) != float(default_inputs["annual_contribution"])
+                    or float(desired_income) != float(default_inputs["desired_income"])
+                )
+                if criteria_changed and (st.session_state.chat_history or st.session_state.last_scenario_summary):
+                    st.session_state.chat_history = []
+                    st.session_state.last_scenario_summary = None
+                    st.info("Updated criteria will refresh the planning assistant when you generate the summary again.")
+
+            with right_panel:
+                st.markdown("<div class='summary-panel'>", unsafe_allow_html=True)
+                st.markdown("<div class='panel-title'>Upload your spreadsheet</div>", unsafe_allow_html=True)
+                st.markdown("<div class='panel-subtitle'>Preview your data on the right so you can quickly check everything before moving on.</div>", unsafe_allow_html=True)
+                uploaded_file = st.file_uploader("Upload your spreadsheet", type=["csv", "xlsx", "xls"])
+                financial_df = load_financial_csv(uploaded_file)
+                st.session_state.financial_df = financial_df
+                if uploaded_file is None:
+                    st.caption("Upload a spreadsheet to preview your financial data and unlock the summary.")
+                elif financial_df.empty:
+                    st.error("We couldn’t read this file. Please upload a CSV or Excel spreadsheet with the required columns.")
+                else:
+                    validation = validate_financial_csv(financial_df)
+                    if validation.is_valid:
+                        st.success("Your file loaded successfully.")
                     else:
-                        st.caption("Upload a spreadsheet to preview your financial data and unlock the summary.")
-                    st.markdown("</div>", unsafe_allow_html=True)
+                        st.warning("Your file loaded, but a few things need attention.")
+                        for issue in validation.issues:
+                            st.write(f"- {issue}")
+                    st.dataframe(financial_df.head(5), use_container_width=True, height=180)
+                    with st.expander("View full preview"):
+                        st.dataframe(financial_df, use_container_width=True, height=320)
+                    with st.expander("Data dictionary"):
+                        render_data_dictionary()
+                st.markdown("</div>", unsafe_allow_html=True)
 
-                submit_left, submit_mid, submit_right = st.columns([1, 1, 1])
-                with submit_mid:
-                    submitted = st.form_submit_button("See My Summary")
-
+            submit_left, submit_mid, submit_right = st.columns([1.5, 1, 1.5])
+            with submit_mid:
+                submitted = st.button("See My Summary", use_container_width=True)
         if submitted:
             st.session_state.inputs = {
                 "current_age": int(current_age),
@@ -549,6 +586,8 @@ def main() -> None:
                 "annual_contribution": float(annual_contribution),
                 "desired_income": float(desired_income),
             }
+            st.session_state.chat_history = []
+            st.session_state.last_scenario_summary = None
             st.session_state.projection = generate_report_from_state()
             st.session_state.page_view = "Summary"
             st.rerun()
@@ -560,11 +599,12 @@ def main() -> None:
             header_left, header_right = st.columns([6, 1])
             with header_left:
                 render_section_intro("Summary", "Your retirement snapshot at a glance.")
-            with header_right:
-                st.write("")
-                if st.button("← Back to Details", use_container_width=True):
-                    st.session_state.page_view = "Enter Your Details"
-                    st.rerun()
+                with header_right:
+                    st.write("")
+                    if st.button("← Back to Details", use_container_width=True):
+                        st.session_state.page_view = "Enter Your Details"
+                        st.session_state.last_scenario_summary = None
+                        st.rerun()
 
             projection = st.session_state.projection
             financial_df = st.session_state.financial_df
@@ -595,6 +635,7 @@ def main() -> None:
                     st.write("")
                     if st.button("Clear", use_container_width=True):
                         st.session_state.chat_history = []
+                        st.session_state.last_scenario_summary = None
                         st.rerun()
 
                 for message in st.session_state.chat_history:
@@ -612,9 +653,18 @@ def main() -> None:
                     )
                     st.session_state.inputs = updated_inputs
                     st.session_state.projection = updated_projection
-                    render_scenario_summary(updated_inputs, updated_projection)
+                    st.session_state.last_scenario_summary = {
+                        "inputs": updated_inputs,
+                        "projection": updated_projection,
+                    }
                     st.session_state.chat_history.append({"role": "assistant", "content": answer})
                     st.rerun()
+
+                if st.session_state.last_scenario_summary:
+                    render_scenario_summary(
+                        st.session_state.last_scenario_summary["inputs"],
+                        st.session_state.last_scenario_summary["projection"],
+                    )
 
             with technical_tab:
                 render_summary_technical(projection, financial_df)
